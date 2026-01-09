@@ -68,6 +68,11 @@ else
     exit 1
 fi
 
+# Interpret escape sequences in body (e.g., \n for newlines)
+if [[ -n "$BODY" ]]; then
+    BODY=$(printf '%b' "$BODY")
+fi
+
 # Build the JSON payload
 JSON_PAYLOAD=$(jq -n \
     --arg title "$TITLE" \
