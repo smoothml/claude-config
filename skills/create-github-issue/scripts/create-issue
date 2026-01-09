@@ -1,0 +1,114 @@
+#!/bin/bash
+#
+# Create a GitHub issue in the current repository using the GitHub API
+#
+# Requirements:
+#   - GITHUB_PAT environment variable must be set with a valid GitHub Personal Access Token
+#   - curl and jq must be installed
+#   - Must be run from within a git repository with a GitHub remote
+#
+# Usage:
+#   create-issue --title "Issue title" [--body "description"] [--labels "label1,label2"]
+#
+
+set -e
+
+# Default values
+TITLE=""
+BODY=""
+LABELS=""
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --title)
+            TITLE="$2"
+            shift 2
+            ;;
+        --body)
+            BODY="$2"
+            shift 2
+            ;;
+        --labels)
+            LABELS="$2"
+            shift 2
+            ;;
+        *)
+            echo "Error: Unknown option $1" >&2
+            echo "Usage: $0 --title 'Issue title' [--body 'description'] [--labels 'label1,label2']" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [[ -z "$TITLE" ]]; then
+    echo "Error: --title is required" >&2
+    exit 1
+fi
+
+# Validate GITHUB_PAT
+if [[ -z "$GITHUB_PAT" ]]; then
+    echo "Error: GITHUB_PAT environment variable is not set" >&2
+    echo "Please set GITHUB_PAT with a valid GitHub Personal Access Token" >&2
+    exit 1
+fi
+
+# Get the repository from git remote
+REMOTE_URL=$(git remote get-url origin 2>/dev/null) || {
+    echo "Error: Not a git repository or no 'origin' remote found" >&2
+    exit 1
+}
+
+# Extract owner/repo from remote URL (handles both HTTPS and SSH formats)
+if [[ "$REMOTE_URL" =~ github\.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
+    REPO="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+else
+    echo "Error: Could not parse GitHub repository from remote URL: $REMOTE_URL" >&2
+    exit 1
+fi
+
+# Interpret escape sequences in body (e.g., \n for newlines)
+if [[ -n "$BODY" ]]; then
+    BODY=$(printf '%b' "$BODY")
+fi
+
+# Build the JSON payload
+JSON_PAYLOAD=$(jq -n \
+    --arg title "$TITLE" \
+    --arg body "$BODY" \
+    '{title: $title, body: $body}')
+
+# Add labels if provided
+if [[ -n "$LABELS" ]]; then
+    # Convert comma-separated labels to JSON array
+    LABELS_JSON=$(echo "$LABELS" | jq -R 'split(",")')
+    JSON_PAYLOAD=$(echo "$JSON_PAYLOAD" | jq --argjson labels "$LABELS_JSON" '. + {labels: $labels}')
+fi
+
+# Make the API request
+API_URL="https://api.github.com/repos/${REPO}/issues"
+
+RESPONSE=$(curl -s -w "\n%{http_code}" \
+    -X POST \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${GITHUB_PAT}" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    -d "$JSON_PAYLOAD" \
+    "$API_URL")
+
+# Extract HTTP status code and response body
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+RESPONSE_BODY=$(echo "$RESPONSE" | sed '$d')
+
+# Check for success
+if [[ "$HTTP_CODE" -eq 201 ]]; then
+    ISSUE_URL=$(echo "$RESPONSE_BODY" | jq -r '.html_url')
+    ISSUE_NUMBER=$(echo "$RESPONSE_BODY" | jq -r '.number')
+    echo "Successfully created issue #${ISSUE_NUMBER}"
+    echo "URL: ${ISSUE_URL}"
+else
+    echo "Error: Failed to create issue (HTTP ${HTTP_CODE})" >&2
+    echo "$RESPONSE_BODY" | jq -r '.message // .' >&2
+    exit 1
+fi
