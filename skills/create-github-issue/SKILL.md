@@ -30,6 +30,37 @@ create-issue \
   [--labels "bug,enhancement"]
 ```
 
+## Formatting the Body
+
+The `--body` argument supports escape sequences for markdown formatting:
+
+- Use `\n` for newlines
+- Use `\t` for tabs
+- Escape quotes inside the body with a backslash: `\"` or use single quotes around the argument
+
+### Examples
+
+Multi-line body with markdown:
+```bash
+create-issue \
+  --title "Bug report" \
+  --body "## Description\n\nThe login button is broken.\n\n## Steps to reproduce\n\n1. Go to login page\n2. Click submit"
+```
+
+Body containing quotes (escape inner quotes):
+```bash
+create-issue \
+  --title "Error message unclear" \
+  --body "The error says \"invalid input\" but doesn't explain why."
+```
+
+Body containing quotes (use single quotes):
+```bash
+create-issue \
+  --title "Error message unclear" \
+  --body 'The error says "invalid input" but does not explain why.'
+```
+
 ## Environment Requirements
 
 - `GITHUB_PAT`: A GitHub Personal Access Token with `repo` scope must be set in the environment
