@@ -25,18 +25,6 @@ Invoke this skill when the user wants to fetch or view an existing GitHub issue.
 get-issue <issue-number>
 ```
 
-### Examples
-
-Get issue #42:
-```bash
-get-issue 42
-```
-
-Get issue #123:
-```bash
-get-issue 123
-```
-
 ## Environment Requirements
 
 - `GITHUB_PAT`: A GitHub Personal Access Token with `repo` scope must be set in the environment
