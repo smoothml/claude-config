@@ -1,0 +1,160 @@
+#!/bin/bash
+#
+# Create a GitHub pull request in the current repository using the GitHub API
+#
+# Requirements:
+#   - GITHUB_PAT environment variable must be set with a valid GitHub Personal Access Token
+#   - curl and jq must be installed
+#   - Must be run from within a git repository with a GitHub remote
+#   - The head branch must be pushed to the remote
+#
+# Usage:
+#   create-pr --title "PR title" --head "feature-branch" [--base "main"] [--body "description"] [--draft]
+#
+
+set -e
+
+# Default values
+TITLE=""
+HEAD=""
+BASE=""
+BODY=""
+DRAFT=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --title)
+            TITLE="$2"
+            shift 2
+            ;;
+        --head)
+            HEAD="$2"
+            shift 2
+            ;;
+        --base)
+            BASE="$2"
+            shift 2
+            ;;
+        --body)
+            BODY="$2"
+            shift 2
+            ;;
+        --draft)
+            DRAFT=true
+            shift
+            ;;
+        *)
+            echo "Error: Unknown option $1" >&2
+            echo "Usage: $0 --title 'PR title' --head 'branch' [--base 'main'] [--body 'description'] [--draft]" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [[ -z "$TITLE" ]]; then
+    echo "Error: --title is required" >&2
+    exit 1
+fi
+
+if [[ -z "$HEAD" ]]; then
+    echo "Error: --head is required" >&2
+    exit 1
+fi
+
+# Validate GITHUB_PAT
+if [[ -z "$GITHUB_PAT" ]]; then
+    echo "Error: GITHUB_PAT environment variable is not set" >&2
+    echo "Please set GITHUB_PAT with a valid GitHub Personal Access Token" >&2
+    exit 1
+fi
+
+# Get the repository from git remote
+REMOTE_URL=$(git remote get-url origin 2>/dev/null) || {
+    echo "Error: Not a git repository or no 'origin' remote found" >&2
+    exit 1
+}
+
+# Extract owner/repo from remote URL (handles both HTTPS and SSH formats)
+if [[ "$REMOTE_URL" =~ github\.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
+    OWNER="${BASH_REMATCH[1]}"
+    REPO_NAME="${BASH_REMATCH[2]}"
+    REPO="${OWNER}/${REPO_NAME}"
+else
+    echo "Error: Could not parse GitHub repository from remote URL: $REMOTE_URL" >&2
+    exit 1
+fi
+
+# If base is not provided, get the default branch from the GitHub API
+if [[ -z "$BASE" ]]; then
+    DEFAULT_BRANCH_RESPONSE=$(curl -s -w "\n%{http_code}" \
+        -H "Accept: application/vnd.github+json" \
+        -H "Authorization: Bearer ${GITHUB_PAT}" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "https://api.github.com/repos/${REPO}")
+
+    DEFAULT_BRANCH_HTTP_CODE=$(echo "$DEFAULT_BRANCH_RESPONSE" | tail -n1)
+    DEFAULT_BRANCH_BODY=$(echo "$DEFAULT_BRANCH_RESPONSE" | sed '$d')
+
+    if [[ "$DEFAULT_BRANCH_HTTP_CODE" -eq 200 ]]; then
+        BASE=$(echo "$DEFAULT_BRANCH_BODY" | jq -r '.default_branch')
+    else
+        echo "Error: Could not determine default branch (HTTP ${DEFAULT_BRANCH_HTTP_CODE})" >&2
+        echo "Please specify --base explicitly" >&2
+        exit 1
+    fi
+fi
+
+# Interpret escape sequences in body (e.g., \n for newlines)
+if [[ -n "$BODY" ]]; then
+    BODY=$(printf '%b' "$BODY")
+fi
+
+# Build the JSON payload
+JSON_PAYLOAD=$(jq -n \
+    --arg title "$TITLE" \
+    --arg head "$HEAD" \
+    --arg base "$BASE" \
+    --arg body "$BODY" \
+    --argjson draft "$DRAFT" \
+    '{title: $title, head: $head, base: $base, body: $body, draft: $draft}')
+
+# Make the API request
+API_URL="https://api.github.com/repos/${REPO}/pulls"
+
+RESPONSE=$(curl -s -w "\n%{http_code}" \
+    -X POST \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${GITHUB_PAT}" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    -d "$JSON_PAYLOAD" \
+    "$API_URL")
+
+# Extract HTTP status code and response body
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+RESPONSE_BODY=$(echo "$RESPONSE" | sed '$d')
+
+# Check for success
+if [[ "$HTTP_CODE" -eq 201 ]]; then
+    PR_URL=$(echo "$RESPONSE_BODY" | jq -r '.html_url')
+    PR_NUMBER=$(echo "$RESPONSE_BODY" | jq -r '.number')
+    if [[ "$DRAFT" == "true" ]]; then
+        echo "Successfully created draft pull request #${PR_NUMBER}"
+    else
+        echo "Successfully created pull request #${PR_NUMBER}"
+    fi
+    echo "URL: ${PR_URL}"
+else
+    echo "Error: Failed to create pull request (HTTP ${HTTP_CODE})" >&2
+    ERROR_MSG=$(echo "$RESPONSE_BODY" | jq -r '.message // empty')
+    if [[ -n "$ERROR_MSG" ]]; then
+        echo "$ERROR_MSG" >&2
+    fi
+    # Show additional error details if available
+    ERRORS=$(echo "$RESPONSE_BODY" | jq -r '.errors[]?.message // empty' 2>/dev/null)
+    if [[ -n "$ERRORS" ]]; then
+        echo "$ERRORS" >&2
+    fi
+    exit 1
+fi
